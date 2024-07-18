@@ -20,7 +20,7 @@ def read_api_key(file_path):
     return api_key
 ###########################################################################################
 
-# Function to Display the Document  and Formating the Document using PyMuPDF 
+# Function to Display the Document and Formating the Document using PyMuPDF 
 # Refer this :
 ### https://pymupdf.readthedocs.io/en/latest/intro.html
 
@@ -35,7 +35,7 @@ def display_document_preview(pdf_file):
 
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
-    
+
 ##############################################################################################
 
 # UI Development
@@ -46,64 +46,68 @@ uploaded_file = st.sidebar.file_uploader("Upload document file", type=["pdf", "d
 if uploaded_file:
     display_document_preview(uploaded_file)
 
-st.title("RAG Document Analyser🥸🔎✨")
+st.title("Panimalar Analysis Platform")
+st.title("Faculty Document Analysis")
 
-# reading the API file 
-
-api_key_file = "Your API Path"
+# Reading the API file 
+api_key_file = "DS.Key.txt"
 api_key = read_api_key(api_key_file)
 
-# Set up Your path of the Document 
+if uploaded_file:
+    # Save uploaded file to a temporary location
+    temp_pdf_path = f"./temp_{uploaded_file.name}"
+    with open(temp_pdf_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
 
-loader = PyPDFLoader("Resume.pdf")
-embedding_model = GoogleGenerativeAIEmbeddings(google_api_key=api_key, model="models/embedding-001")
+    # Load the uploaded file for analysis
+    loader = PyPDFLoader(temp_pdf_path)
+    embedding_model = GoogleGenerativeAIEmbeddings(google_api_key=api_key, model="models/embedding-001")
 
-# Applying Chunking for Optimization
+    data = loader.load_and_split()
+    text_splitter = NLTKTextSplitter(chunk_size=200, chunk_overlap=200)
+    chunks = text_splitter.split_documents(data)
 
-data = loader.load_and_split()
-text_splitter = NLTKTextSplitter(chunk_size=200, chunk_overlap=200)
-chunks = text_splitter.split_documents(data)
+    # Utilizing the ChromaDataBase for Storing the Document Text data in Vector Format
+    db = Chroma.from_documents(chunks, embedding_model, persist_directory="./chroma_db_")
+    db.persist()
 
-# Utilizing the ChromaDataBase for Storing the Document Text data in Vector Format
+    # Connect to the persisted Chroma database
+    db_connection = Chroma(persist_directory="./chroma_db_", embedding_function=embedding_model)
+    retriever = db_connection.as_retriever(search_kwargs={"k": 1})
 
-db = Chroma.from_documents(chunks, embedding_model, persist_directory="./chroma_db_")
-db.persist()
+    # Giving the Instructions to the Model
+    chat_template = ChatPromptTemplate.from_messages([
+        SystemMessage(content="""You are a Helpful AI Bot. 
+        You take the context and question from the user. Your answer should be based on the specific context."""),
+        HumanMessagePromptTemplate.from_template("""Answer the question based on the given context.
+        Context:
+        {context}
+        
+        Question: 
+        {question}
+        
+        Answer: """)
+    ])
 
-# Connect to the persisted Chroma database
-db_connection = Chroma(persist_directory="./chroma_db_", embedding_function=embedding_model)
-retriever = db_connection.as_retriever(search_kwargs={"k": 1})
+    # Instantiate chat model
+    chat_model = ChatGoogleGenerativeAI(google_api_key=api_key, model="gemini-1.5-pro-latest")
 
-# Giving the Instructions to the Model
+    # Instantiate output parser
+    output_parser = StrOutputParser()
 
-chat_template = ChatPromptTemplate.from_messages([
-    SystemMessage(content="""You are a Helpful AI Bot. 
-    You take the context and question from the user. Your answer should be based on the specific context."""),
-    HumanMessagePromptTemplate.from_template("""Answer the question based on the given context.
-    Context:
-    {context}
-    
-    Question: 
-    {question}
-    
-    Answer: """)
-])
+    ########################## LangChain Creation ###################################################
+    # Create RAG chain
+    rag_chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | chat_template
+        | chat_model
+        | output_parser
+    )
+    ################################################################################################
+    user_input = st.text_input("Ask a question:")
+    if st.button("Search"):
+        retrieved_docs = rag_chain.invoke(user_input)
+        st.write(retrieved_docs)
 
-# Instantiate chat model
-chat_model = ChatGoogleGenerativeAI(google_api_key=api_key, model="gemini-1.5-pro-latest")
-
-# Instantiate output parser
-output_parser = StrOutputParser()
-
-########################## LangChain Creation ###################################################
-# Create RAG chain
-rag_chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | chat_template
-    | chat_model
-    | output_parser
-)
-################################################################################################
-user_input = st.text_input("Ask a question:")
-if st.button("Search"):
-    retrieved_docs = rag_chain.invoke(user_input)
-    st.write(retrieved_docs)
+else:
+    st.write("Please upload a document to analyze.")
